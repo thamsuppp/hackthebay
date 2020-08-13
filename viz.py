@@ -16,6 +16,7 @@ from shapely.geometry import Polygon
 import matplotlib.colors as mcolors
 import matplotlib.cm as cm
 
+from datetime import datetime
 from stringcase import titlecase
 
 mapbox_access_token = "pk.eyJ1IjoidGhhbXN1cHBwIiwiYSI6ImNrN3Z4eTk2cTA3M2czbG5udDBtM29ubGIifQ.3UvulsJUb0FSLnAOkJiRiA"
@@ -31,11 +32,13 @@ else:
     app_name = 'dash-scattermapboxplot'
 
 
-water_data = pd.read_csv('water_subset.csv')
-water_site_counts = water_data.groupby('coordinates')['coordinates'].agg(['count', 'first'])
-water_site_counts['Lat'] = water_site_counts['first'].apply(lambda x: float(x[1:-1].split(', ')[1]))
-water_site_counts['Long'] = water_site_counts['first'].apply(lambda x: float(x[1:-1].split(', ')[0]))
+water_data = pd.read_csv('Water_FINAL.csv')
 
+print('Loaded')
+
+#water_site_counts = water_data.groupby('coordinates')['coordinates'].agg(['count', 'first'])
+#water_site_counts['Lat'] = water_site_counts['first'].apply(lambda x: float(x[1:-1].split(', ')[1]))
+#water_site_counts['Long'] = water_site_counts['first'].apply(lambda x: float(x[1:-1].split(', ')[0]))
 
 
 ### APP LAYOUT ###
@@ -60,7 +63,13 @@ app.layout = html.Div([
     ),
 
     dcc.Dropdown(
+        id = 'huc_dropdown',
+        options = [{'label': huc, 'value': huc} for huc in water_data.groupby('HUC12_')['coordinates'].nunique().sort_values(ascending = False).index.tolist()]
+    ),
+
+    dcc.Dropdown(
         id = 'year_dropdown',
+        # Get the HUC12s, sorted on the number of unique coordinates per HUC12
         options = [{'label': year, 'value': year} for year in water_data['Year'].unique()]
     ),
 
@@ -69,6 +78,9 @@ app.layout = html.Div([
         options = [{'label': month, 'value': month} for month in range(1, 13)]
     ),
 
+    html.Div(
+        id = 'huc_div'
+    ),
     
     html.Div(dcc.Graph(id="map")),
     dcc.Checklist(
@@ -81,38 +93,15 @@ app.layout = html.Div([
 ], className="container")
 
 
-
-
-    # html.Div([
-    #     dcc.Input(id = 'city_search_input', placeholder = 'Search US city...'),
-    #     html.Button('Search', id = 'city_search_button'),
-    #     html.Div(children = 'Philadelphia', id = 'city_div'),
-    #     dcc.Store('df_store')
-    # ]),
-    # html.H2('Overlay Options'),
-    # dcc.Dropdown(id = 'overlay_variable_dropdown', options = overlay_variables, value = 'population'),
-    # dcc.Dropdown(id = 'multi_variable_levels_dropdown', options = []),
-    # dcc.Dropdown(
-    #     id = 'transform_dropdown',
-    #     options = [
-    #         {'label': 'Value', 'value': 'Value'},
-    #         {'label': '% of Population', 'value': '% of Population'},
-    #         {'label': 'Density (per square mile)', 'value': 'Density (per square mile)'},
-    #         {'label': '% of Median Household Income', 'value' : '% of Median Household Income'}],
-    #     value = 'Value'
-    #     ),
-    # dcc.Checklist(
-    #     id = 'layer_checkbox',
-    #     options = [{'label': 'Show Overlay', 'value': True}],
-    #     values = [True]
-    # ),
-    # html.Div(children = 'Opacity'),
-    # dcc.Slider(id = 'layer_opacity_slider', min = 0, max = 1, step = 0.1, value = 0.8),
-
-
 ### APP CALLBACKS ###
 
 
+@app.callback(
+    Output('huc_div', 'children'),
+    [Input('huc_dropdown', 'value')]
+)
+def show_huc_name(huc):
+    return water_data.loc[water_data['HUC12_'] == huc, 'HUCNAME_'].reset_index(drop = True)[0]
 
 
 
@@ -120,25 +109,29 @@ app.layout = html.Div([
 @app.callback(
     Output('map', 'figure'),
     [Input('show_map_checklist', 'value'),
+    Input('huc_dropdown', 'value'),
     Input('parameter_dropdown', 'value'),
     Input('year_dropdown', 'value'),
     Input('month_dropdown', 'value'),
     Input('aggregation_dropdown', 'value')]
 )
-def show_map(show_map_checklist_value, parameter, year, month, aggregation):
+def show_map(show_map_checklist_value, huc, parameter, year, month, aggregation):
+
+    # Subset by HUC
+    water_data_subset = water_data.loc[water_data['HUC12_'] == huc, :]
 
     if aggregation == 'count':
-        param_summary = water_data.loc[(water_data['Year'] == year) & (water_data['Month'] == month) & (water_data['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].count()
+        param_summary = water_data_subset.loc[(water_data_subset['Year'] == year) & (water_data_subset['Month'] == month) & (water_data_subset['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].count()
     elif aggregation == 'mean':
-        param_summary = water_data.loc[(water_data['Year'] == year) & (water_data['Month'] == month) & (water_data['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].mean()
+        param_summary = water_data_subset.loc[(water_data_subset['Year'] == year) & (water_data_subset['Month'] == month) & (water_data_subset['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].mean()
     elif aggregation == 'median':
-        param_summary = water_data.loc[(water_data['Year'] == year) & (water_data['Month'] == month) & (water_data['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].median()
+        param_summary = water_data_subset.loc[(water_data_subset['Year'] == year) & (water_data_subset['Month'] == month) & (water_data_subset['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].median()
     elif aggregation == 'min':
-        param_summary = water_data.loc[(water_data['Year'] == year) & (water_data['Month'] == month) & (water_data['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].min()
+        param_summary = water_data_subset.loc[(water_data_subset['Year'] == year) & (water_data_subset['Month'] == month) & (water_data_subset['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].min()
     elif aggregation == 'max':
-        param_summary = water_data.loc[(water_data['Year'] == year) & (water_data['Month'] == month) & (water_data['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].max()
+        param_summary = water_data_subset.loc[(water_data_subset['Year'] == year) & (water_data_subset['Month'] == month) & (water_data_subset['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].max()
     else:
-        param_summary = water_data.loc[(water_data['Year'] == 2015) & (water_data['Month'] == 1) & (water_data['Parameter'] == 'TN'), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].mean()
+        param_summary = water_data_subset.loc[(water_data_subset['Year'] == 2015) & (water_data_subset['Month'] == 1) & (water_data_subset['Parameter'] == 'TN'), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].mean()
         
     data = [go.Scattermapbox(
             lat = param_summary['Latitude'],
@@ -148,8 +141,8 @@ def show_map(show_map_checklist_value, parameter, year, month, aggregation):
                 size = 7,
                 color = param_summary['MeasureValue'],
                 colorscale = 'Bluered',
-                cmin = water_data.loc[water_data['Parameter'] == parameter, 'MeasureValue'].min(),
-                cmax = water_data.loc[water_data['Parameter'] == parameter, 'MeasureValue'].max()
+                #cmin = water_data_subset.loc[water_data_subset['Parameter'] == parameter, 'MeasureValue'].min(),
+                #cmax = water_data_subset.loc[water_data_subset['Parameter'] == parameter, 'MeasureValue'].max()
             ),
             text= param_summary['MeasureValue'],
         )]
@@ -169,7 +162,7 @@ def show_map(show_map_checklist_value, parameter, year, month, aggregation):
                         lon=-76.4
                     ),
                     pitch=0,
-                    zoom=8
+                    zoom=9
                 )
             )
     }
