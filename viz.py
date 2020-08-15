@@ -39,6 +39,10 @@ water_data = pd.read_csv('Water_FINAL.csv')
 water_data['Latitude'] = water_data['Latitude'].apply(lambda x: round(x, 3))
 water_data['Longitude'] = water_data['Longitude'].apply(lambda x: round(x, 3))
 
+ps_data = pd.read_csv('PointSourceFacilityInformationState.csv')
+ps_data['Latitude'] = ps_data['Latitude'].apply(lambda x: round(x, 3))
+ps_data['Longitude'] = ps_data['Longitude'].apply(lambda x: round(x, 3))
+
 
 print('Loaded')
 
@@ -109,14 +113,21 @@ app.layout = html.Div([
 
     dcc.Graph(id = 'graph'),
     
-    html.Div(dcc.Graph(id="map")),
     dcc.Checklist(
-        id = 'show_map_checklist',
-        options = [{'label': 'Show Map', 'value': True}],
-        value = [True])
+        id = 'point_source_checklist',
+        options = [{'label': 'Show Point Sources of Pollution', 'value': True}],
+        value = [True]),
+
+
+    html.Div(dcc.Graph(id="map"))
+    
 
 
 
+    dcc.Checklist(
+        id = 'center_map_checklist',
+        options = [{'label': 'Automatically Center Map', 'value': True}],
+        value = [True]),
 ], className="container")
 
 
@@ -221,14 +232,15 @@ def draw_graph(parameter, datatable, datatable_selected_rows):
 
 @app.callback(
     Output('map', 'figure'),
-    [Input('show_map_checklist', 'value'),
-    Input('huc_dropdown', 'value'),
+    [Input('huc_dropdown', 'value'),
     Input('parameter_dropdown', 'value'),
     Input('year_dropdown', 'value'),
     Input('month_dropdown', 'value'),
-    Input('aggregation_dropdown', 'value')]
+    Input('aggregation_dropdown', 'value'),
+    Input('point_source_checklist', 'value'),
+    Input('center_map_checklist', 'value')]
 )
-def show_map(show_map_checklist_value, huc, parameter, year, month, aggregation):
+def show_map(huc, parameter, year, month, aggregation, point_source_checklist_value, center_map_checklist_value):
 
 
     # Subset by HUC
@@ -253,14 +265,45 @@ def show_map(show_map_checklist_value, huc, parameter, year, month, aggregation)
             lon = param_summary['Longitude'],
             mode='markers',
             marker=go.scattermapbox.Marker(
-                size = 7,
+                size = 10,
                 color = param_summary['MeasureValue'],
                 colorscale = 'Bluered',
                 #cmin = water_data_subset.loc[water_data_subset['Parameter'] == parameter, 'MeasureValue'].min(),
                 #cmax = water_data_subset.loc[water_data_subset['Parameter'] == parameter, 'MeasureValue'].max()
             ),
             text= param_summary['MeasureValue'],
+            name = 'Stations'
         )]
+
+
+    point_sources = go.Scattermapbox(
+        lat = ps_data['Latitude'],
+        lon = ps_data['Longitude'],
+        mode = 'markers',
+        marker = go.scattermapbox.Marker(
+                size = 7,
+                color = 'red'
+        ),
+        text = ps_data['Facility'],
+        name = 'Point Sources'
+    )
+
+    if point_source_checklist_value == [True]:
+        data.append(point_sources)
+
+    mapbox_dict = dict(
+                    accesstoken=mapbox_access_token,
+                    bearing=0,
+                    center= (go.layout.mapbox.Center(
+                        lat=39,
+                        lon=-76.4
+                    )),
+                    pitch=0,
+                    zoom=9
+                )
+    
+    #if center_map_checklist_value == [False]:
+    #    del mapbox_dict['center']
 
     return {'data': data,
             'layout': go.Layout(
@@ -269,16 +312,7 @@ def show_map(show_map_checklist_value, huc, parameter, year, month, aggregation)
                 margin = {'l': 50, 'r': 50, 't': 0, 'b': 0},
                 hovermode='closest',
                 showlegend = True,
-                mapbox=dict(
-                    accesstoken=mapbox_access_token,
-                    bearing=0,
-                    center=go.layout.mapbox.Center(
-                        lat=39,
-                        lon=-76.4
-                    ),
-                    pitch=0,
-                    zoom=9
-                )
+                mapbox = mapbox_dict 
             )
     }
 
