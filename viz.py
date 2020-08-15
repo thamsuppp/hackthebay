@@ -36,9 +36,6 @@ water_data = pd.read_csv('Water_FINAL.csv')
 
 print('Loaded')
 
-#water_site_counts = water_data.groupby('coordinates')['coordinates'].agg(['count', 'first'])
-#water_site_counts['Lat'] = water_site_counts['first'].apply(lambda x: float(x[1:-1].split(', ')[1]))
-#water_site_counts['Long'] = water_site_counts['first'].apply(lambda x: float(x[1:-1].split(', ')[0]))
 
 
 ### APP LAYOUT ###
@@ -81,6 +78,8 @@ app.layout = html.Div([
     html.Div(
         id = 'huc_div'
     ),
+
+    dcc.Graph(id = 'graph'),
     
     html.Div(dcc.Graph(id="map")),
     dcc.Checklist(
@@ -103,6 +102,51 @@ app.layout = html.Div([
 def show_huc_name(huc):
     return water_data.loc[water_data['HUC12_'] == huc, 'HUCNAME_'].reset_index(drop = True)[0]
 
+@app.callback(
+    Output('graph', 'figure'),
+    [Input('map', 'clickData'),
+    Input('parameter_dropdown', 'value')]
+)
+def show_click_data(click_data, parameter):
+    print('click data is')
+    print(click_data)
+
+    longitude = click_data['points'][0]['lon']
+    latitude = click_data['points'][0]['lat']
+
+
+    # Subset by measure value
+    measure = water_data.loc[(water_data['Longitude'] == longitude) & (water_data['Latitude'] == latitude) & 
+                             (water_data['Parameter'] == parameter), ['Date', 'Time', 'MeasureValue']]
+    # Change to datetime object
+    measure['Date'] = measure['Date'].apply(lambda x: datetime.strptime(x, '%Y-%m-%d'))
+    measure = measure.sort_values('Date', ascending = True)
+    measure['hoverinfo'] = measure.apply(lambda row: '{}, {}'.format(datetime.strftime(row['Date'], '%Y-%m-%d'), row['Time']), axis = 1)
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x = measure['Date'],
+            y = measure['MeasureValue'],
+            name = '{}, {}'.format(latitude, longitude),
+            mode = 'lines',
+            text = measure['hoverinfo'],
+            hoverinfo = 'text+y'
+        ))
+
+    fig.update_layout(
+        title = parameter,
+        yaxis_title = parameter,
+        xaxis_title = 'Date'
+    )
+
+    return fig
+
+
+
+
+
 
 
 
@@ -120,6 +164,7 @@ def show_map(show_map_checklist_value, huc, parameter, year, month, aggregation)
     # Subset by HUC
     water_data_subset = water_data.loc[water_data['HUC12_'] == huc, :]
 
+    # Choose the aggregation
     if aggregation == 'count':
         param_summary = water_data_subset.loc[(water_data_subset['Year'] == year) & (water_data_subset['Month'] == month) & (water_data_subset['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].count()
     elif aggregation == 'mean':
