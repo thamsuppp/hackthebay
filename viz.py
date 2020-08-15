@@ -3,6 +3,7 @@ import dash
 import us
 import dash_core_components as dcc
 from dash.dependencies import Input, Output, State
+import dash_table
 import dash_html_components as html
 import pandas as pd
 import numpy as np
@@ -79,6 +80,28 @@ app.layout = html.Div([
         id = 'huc_div'
     ),
 
+
+    html.Div(
+        [   
+            dash_table.DataTable(
+                id='station_list',
+                columns=[
+                    {'id': 'Coordinates', 'name': 'Coordinates'},
+                    {'id': 'HUC12', 'name': 'HUC12'},
+                    {'id': 'HUC Name', 'name': 'HUC Name'},
+                    {'id': 'County', 'name': 'County'},
+                    {'id': 'State', 'name': 'State'},
+                    {'id': 'Station', 'name': 'Station'},
+                    {'id': 'Station Code', 'name': 'Station Code'}
+                ],
+                data = [],
+                row_selectable='multi',
+                row_deletable=True,
+                selected_rows=[],
+            ),
+        ],
+    ),
+
     dcc.Graph(id = 'graph'),
     
     html.Div(dcc.Graph(id="map")),
@@ -102,41 +125,79 @@ app.layout = html.Div([
 def show_huc_name(huc):
     return water_data.loc[water_data['HUC12_'] == huc, 'HUCNAME_'].reset_index(drop = True)[0]
 
-@app.callback(
-    Output('graph', 'figure'),
-    [Input('map', 'clickData'),
-    Input('parameter_dropdown', 'value')]
-)
-def show_click_data(click_data, parameter):
-    print('click data is')
-    print(click_data)
 
+@app.callback(
+    Output('station_list', 'data'),
+    [Input('map', 'clickData')],
+    [State('station_list', 'data')]
+)
+def update_station_list(click_data, datatable):
+
+    print(click_data)
     longitude = click_data['points'][0]['lon']
     latitude = click_data['points'][0]['lat']
 
+    station_info = water_data.loc[(water_data['Longitude'] == longitude) & (water_data['Latitude'] == latitude), 
+                                ['coordinates', 'HUC12_', 'HUCNAME_', 'COUNTY_', 'STATE_', 'Station', 'StationCode', 'Latitude', 'Longitude']]
+    print(station_info)
+    station_info = station_info.reset_index(drop = True).iloc[0, :]
 
-    # Subset by measure value
-    measure = water_data.loc[(water_data['Longitude'] == longitude) & (water_data['Latitude'] == latitude) & 
-                             (water_data['Parameter'] == parameter), ['Date', 'Time', 'MeasureValue']]
-    # Change to datetime object
-    measure['Date'] = measure['Date'].apply(lambda x: datetime.strptime(x, '%Y-%m-%d'))
-    measure = measure.sort_values('Date', ascending = True)
-    measure['hoverinfo'] = measure.apply(lambda row: '{}, {}'.format(datetime.strftime(row['Date'], '%Y-%m-%d'), row['Time']), axis = 1)
+    data = {'Coordinates': station_info['coordinates'],
+            'HUC12': station_info['HUC12_'],
+            'HUC Name': station_info['HUCNAME_'],
+            'County': station_info['COUNTY_'],
+            'State': station_info['STATE_'],
+            'Station': station_info['Station'],
+            'Station Code': station_info['StationCode'],
+            'Latitude': station_info['Latitude'],
+            'Longitude': station_info['Longitude']}
+
+    datatable.append(data)
+
+    return datatable
+
+
+
+
+@app.callback(
+    Output('graph', 'figure'),
+    [Input('parameter_dropdown', 'value'),
+    Input('station_list', 'data'),
+    Input('station_list', 'selected_rows')]
+)
+def draw_graph(parameter, datatable, datatable_selected_rows):
+
+
+    data_selected = [datatable[index] for index in datatable_selected_rows]
+
+    coordinates_selected = [(e['Latitude'], e['Longitude']) for e in data_selected]
 
     fig = go.Figure()
 
-    fig.add_trace(
-        go.Scatter(
-            x = measure['Date'],
-            y = measure['MeasureValue'],
-            name = '{}, {}'.format(latitude, longitude),
-            mode = 'lines',
-            text = measure['hoverinfo'],
-            hoverinfo = 'text+y'
-        ))
+    for station_coords in coordinates_selected:
+
+        # Subset by measure value
+        measure = water_data.loc[(water_data['Longitude'] == station_coords[1]) & (water_data['Latitude'] == station_coords[0]) & 
+                                (water_data['Parameter'] == parameter), ['Date', 'Time', 'MeasureValue']]
+        # Change to datetime object
+        measure['Date'] = measure['Date'].apply(lambda x: datetime.strptime(x, '%Y-%m-%d'))
+        measure = measure.sort_values('Date', ascending = True)
+        measure['hoverinfo'] = measure.apply(lambda row: '{}, {}'.format(datetime.strftime(row['Date'], '%Y-%m-%d'), row['Time']), axis = 1)
+
+
+        fig.add_trace(
+            go.Scatter(
+                x = measure['Date'],
+                y = measure['MeasureValue'],
+                name = '{}, {}'.format(station_coords[0], station_coords[1]),
+                mode = 'lines',
+                text = measure['hoverinfo'],
+                hoverinfo = 'text+y'
+            ))
 
     fig.update_layout(
         title = parameter,
+        legend = dict(x = -.1, y = 1.2),
         yaxis_title = parameter,
         xaxis_title = 'Date'
     )
@@ -160,6 +221,7 @@ def show_click_data(click_data, parameter):
     Input('aggregation_dropdown', 'value')]
 )
 def show_map(show_map_checklist_value, huc, parameter, year, month, aggregation):
+
 
     # Subset by HUC
     water_data_subset = water_data.loc[water_data['HUC12_'] == huc, :]
