@@ -39,9 +39,9 @@ water_data = pd.read_csv('Water_FINAL.csv')
 water_data['Latitude'] = water_data['Latitude'].apply(lambda x: round(x, 3))
 water_data['Longitude'] = water_data['Longitude'].apply(lambda x: round(x, 3))
 
-ps_data = pd.read_csv('PointSourceFacilityInformationState.csv')
-ps_data['Latitude'] = ps_data['Latitude'].apply(lambda x: round(x, 3))
-ps_data['Longitude'] = ps_data['Longitude'].apply(lambda x: round(x, 3))
+ps_data = pd.read_csv('PointSourceLoadDataState.csv')
+ps_data['LATITUDE'] = ps_data['LATITUDE'].apply(lambda x: round(x, 3))
+ps_data['LONGITUDE'] = ps_data['LONGITUDE'].apply(lambda x: round(x, 3))
 
 
 print('Loaded')
@@ -95,15 +95,45 @@ app.layout = html.Div([
             dash_table.DataTable(
                 id='station_list',
                 columns=[
+                    {'id': 'Point Type', 'name': 'Point Type'},
                     {'id': 'Coordinates', 'name': 'Coordinates'},
+                    {'id': 'Parameter', 'name': 'Parameter', 'presentation': 'dropdown'},
                     {'id': 'HUC12', 'name': 'HUC12'},
                     {'id': 'HUC Name', 'name': 'HUC Name'},
                     {'id': 'County', 'name': 'County'},
                     {'id': 'State', 'name': 'State'},
                     {'id': 'Station', 'name': 'Station'},
-                    {'id': 'Station Code', 'name': 'Station Code'}
+                    {'id': 'Station Code', 'name': 'Station Code'},
+                    {'id': 'Facility', 'name': 'Facility'},
+                    {'id': 'Discharge Type', 'name': 'Discharge Type'},
                 ],
-                data = [],
+                data = [
+                    # {'Point Type': 'Station',
+                    # 'Coordinates': '39.44149, -76.02599000000002',
+                    # 'Parameter': 'TN',
+                    # 'HUC12': 20600010000,
+                    # 'HUC Name': 'Upper Chesapeake Bay',
+                    # 'County': 'Cecil County',
+                    # 'State': 'MD',
+                    # 'Station': 'CB2.1',
+                    # 'Latitude': 39.441,
+                    # 'Longitude': -76.026}
+
+                ],
+                dropdown_conditional = [
+                #     {
+                #         'if': {
+                #             'column_id': 'Parameter',
+                #             'filter_query': '{Coordinates} eq "39.44149, -76.02599000000002"'
+                #         },
+                #         'options': [
+                #                         {'label': i, 'value': i}
+                #                         for i in ['TN', 'TP', 'WTEMP']
+                #                     ]
+                #     }
+
+                ],
+                editable = True,
                 row_selectable='multi',
                 row_deletable=True,
                 selected_rows=[],
@@ -119,7 +149,7 @@ app.layout = html.Div([
         value = [True]),
 
 
-    html.Div(dcc.Graph(id="map"))
+    html.Div(dcc.Graph(id="map")),
     
 
 
@@ -143,37 +173,103 @@ def show_huc_name(huc):
 
 
 @app.callback(
-    Output('station_list', 'data'),
+    [Output('station_list', 'data'),
+     Output('station_list', 'dropdown_conditional')],
     [Input('map', 'clickData')],
-    [State('station_list', 'data')]
+    [State('station_list', 'data'),
+    State('station_list', 'dropdown_conditional')]
 )
-def update_station_list(click_data, datatable):
+def update_station_list(click_data, datatable, datatable_dropdown_conditional):
 
     print(click_data)
+    # Check if the clicked point is a point source or a station
+    
+
     longitude = click_data['points'][0]['lon']
     latitude = click_data['points'][0]['lat']
 
     longitude = round(longitude, 3)
     latitude = round(latitude, 3)
 
-    station_info = water_data.loc[(water_data['Longitude'] == longitude) & (water_data['Latitude'] == latitude), 
-                                ['coordinates', 'HUC12_', 'HUCNAME_', 'COUNTY_', 'STATE_', 'Station', 'StationCode', 'Latitude', 'Longitude']]
-    print(station_info)
-    station_info = station_info.reset_index(drop = True).iloc[0, :]
+    if click_data['points'][0]['curveNumber'] == 0: # Station:
+        print('Station')
 
-    data = {'Coordinates': station_info['coordinates'],
-            'HUC12': station_info['HUC12_'],
-            'HUC Name': station_info['HUCNAME_'],
-            'County': station_info['COUNTY_'],
-            'State': station_info['STATE_'],
-            'Station': station_info['Station'],
-            'Station Code': station_info['StationCode'],
-            'Latitude': station_info['Latitude'],
-            'Longitude': station_info['Longitude']}
+        station_info = water_data.loc[(water_data['Longitude'] == longitude) & (water_data['Latitude'] == latitude), 
+                                    ['coordinates', 'HUC12_', 'HUCNAME_', 'COUNTY_', 'STATE_', 'Station', 'StationCode', 'Latitude', 'Longitude', 'Parameter']]
+        print(station_info)
+        station_info_first = station_info.reset_index(drop = True).iloc[0, :]
+
+        data = {
+            'Point Type': 'Station',
+            'Coordinates': station_info_first['coordinates'],
+            'HUC12': station_info_first['HUC12_'],
+            'HUC Name': station_info_first['HUCNAME_'],
+            'County': station_info_first['COUNTY_'],
+            'State': station_info_first['STATE_'],
+            'Station': station_info_first['Station'],
+            'Station Code': station_info_first['StationCode'],
+            'Latitude': station_info_first['Latitude'],
+            'Longitude': station_info_first['Longitude']}
+
+        dropdown_dict = {
+            'if': {
+                'column_id': 'Parameter',
+                'filter_query': '{Coordinates} eq "' + str(station_info_first['coordinates']) + '"'
+            },
+            'options': [
+                {'label': i, 'value': i} for i in station_info['Parameter'].unique()
+            ]
+        }
+
+        print('Test')
+
+        
+        
+
+    elif click_data['points'][0]['curveNumber'] == 1: # Point Source:
+        print('Point Source')
+
+        ps_info = ps_data.loc[(ps_data['LONGITUDE'] == longitude) & (ps_data['LATITUDE'] == latitude),
+                            ['LONGITUDE', 'LATITUDE', 'FACILITY', 'DISCHARGE_TYPE', 'COUNTY_CITY', 'STATE', 'PARAMETER']]    
+        
+        print(ps_info)
+        ps_info_first = ps_info.reset_index(drop = True).iloc[0, :]
+
+        print(ps_info_first)
+
+        ps_coordinate = '{}, {}'.format(ps_info_first['LATITUDE'], ps_info_first['LONGITUDE'])
+
+        data = {
+            'Point Type': 'Point Source',
+            'Coordinates': ps_coordinate,
+            'County': ps_info_first['COUNTY_CITY'],
+            'State': ps_info_first['STATE'],
+            'Facility': ps_info_first['FACILITY'],
+            'Discharge Type': ps_info_first['DISCHARGE_TYPE']}
+
+        
+        dropdown_dict = {
+            'if': {
+                'column_id': 'Parameter',
+                'filter_query': '{Coordinates} eq "' + ps_coordinate + '"'
+            },
+            'options': [
+                {'label': i, 'value': i} for i in ps_info['PARAMETER'].unique()
+            ]
+        }
+
 
     datatable.append(data)
 
-    return datatable
+    if not datatable_dropdown_conditional:
+        datatable_dropdown_conditional = [dropdown_dict]
+    else:
+        datatable_dropdown_conditional.append(dropdown_dict)
+
+    print('Dropdown conditional is')
+    print(datatable_dropdown_conditional)
+
+    return datatable, datatable_dropdown_conditional
 
 
 
@@ -277,14 +373,14 @@ def show_map(huc, parameter, year, month, aggregation, point_source_checklist_va
 
 
     point_sources = go.Scattermapbox(
-        lat = ps_data['Latitude'],
-        lon = ps_data['Longitude'],
+        lat = ps_data['LATITUDE'],
+        lon = ps_data['LONGITUDE'],
         mode = 'markers',
         marker = go.scattermapbox.Marker(
                 size = 7,
                 color = 'red'
         ),
-        text = ps_data['Facility'],
+        text = ps_data['FACILITY'],
         name = 'Point Sources'
     )
 
