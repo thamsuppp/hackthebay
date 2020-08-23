@@ -39,9 +39,13 @@ water_data = pd.read_csv('Water_FINAL.csv')
 water_data['Latitude'] = water_data['Latitude'].apply(lambda x: round(x, 3))
 water_data['Longitude'] = water_data['Longitude'].apply(lambda x: round(x, 3))
 
-ps_data = pd.read_csv('PointSourceLoadDataState.csv')
+ps_data = pd.read_csv('PointSourceLoadDataState_updated.csv')
 ps_data['LATITUDE'] = ps_data['LATITUDE'].apply(lambda x: round(x, 3))
 ps_data['LONGITUDE'] = ps_data['LONGITUDE'].apply(lambda x: round(x, 3))
+
+huc_data = pd.read_csv('HUCS_with_ps.csv')
+huc_data['text'] = huc_data.apply(lambda row: '{} -> {}'.format(row['HUC12'], row['TOHUC']), axis = 1)
+
 
 
 print('Loaded')
@@ -155,8 +159,8 @@ app.layout = html.Div([
 
 
     dcc.Checklist(
-        id = 'center_map_checklist',
-        options = [{'label': 'Automatically Center Map', 'value': True}],
+        id = 'show_huc_checklist',
+        options = [{'label': 'Show HUC', 'value': True}],
         value = [True]),
 ], className="container")
 
@@ -192,7 +196,6 @@ def update_station_list(click_data, datatable, datatable_dropdown_conditional):
     latitude = round(latitude, 3)
 
     if click_data['points'][0]['curveNumber'] == 0: # Station:
-        print('Station')
 
         station_info = water_data.loc[(water_data['Longitude'] == longitude) & (water_data['Latitude'] == latitude), 
                                     ['coordinates', 'HUC12_', 'HUCNAME_', 'COUNTY_', 'STATE_', 'Station', 'StationCode', 'Latitude', 'Longitude', 'Parameter']]
@@ -221,18 +224,12 @@ def update_station_list(click_data, datatable, datatable_dropdown_conditional):
             ]
         }
 
-        print('Test')
-
-        
-        
 
     elif click_data['points'][0]['curveNumber'] == 1: # Point Source:
-        print('Point Source')
 
         ps_info = ps_data.loc[(ps_data['LONGITUDE'] == longitude) & (ps_data['LATITUDE'] == latitude),
                             ['LONGITUDE', 'LATITUDE', 'FACILITY', 'DISCHARGE_TYPE', 'COUNTY_CITY', 'STATE', 'PARAMETER']]    
         
-        print(ps_info)
         ps_info_first = ps_info.reset_index(drop = True).iloc[0, :]
 
         print(ps_info_first)
@@ -245,9 +242,10 @@ def update_station_list(click_data, datatable, datatable_dropdown_conditional):
             'County': ps_info_first['COUNTY_CITY'],
             'State': ps_info_first['STATE'],
             'Facility': ps_info_first['FACILITY'],
-            'Discharge Type': ps_info_first['DISCHARGE_TYPE']}
+            'Discharge Type': ps_info_first['DISCHARGE_TYPE'],
+            'Latitude': ps_info_first['LATITUDE'],
+            'Longitude': ps_info_first['LONGITUDE']}
 
-        
         dropdown_dict = {
             'if': {
                 'column_id': 'Parameter',
@@ -260,69 +258,80 @@ def update_station_list(click_data, datatable, datatable_dropdown_conditional):
 
 
     datatable.append(data)
-
     if not datatable_dropdown_conditional:
         datatable_dropdown_conditional = [dropdown_dict]
     else:
         datatable_dropdown_conditional.append(dropdown_dict)
 
-    print('Dropdown conditional is')
-    print(datatable_dropdown_conditional)
-
     return datatable, datatable_dropdown_conditional
-
-
 
 
 @app.callback(
     Output('graph', 'figure'),
-    [Input('parameter_dropdown', 'value'),
-    Input('station_list', 'data'),
+    [Input('station_list', 'data'),
     Input('station_list', 'selected_rows')]
 )
-def draw_graph(parameter, datatable, datatable_selected_rows):
+def draw_graph(datatable, datatable_selected_rows):
 
 
     data_selected = [datatable[index] for index in datatable_selected_rows]
 
-    coordinates_selected = [(e['Latitude'], e['Longitude']) for e in data_selected]
-
     fig = go.Figure()
 
-    for station_coords in coordinates_selected:
+    for station in data_selected:
+        
+        station_coords = (station['Latitude'], station['Longitude'])
+        if station['Point Type'] == 'Station':
 
-        # Subset by measure value
-        measure = water_data.loc[(water_data['Longitude'] == station_coords[1]) & (water_data['Latitude'] == station_coords[0]) & 
-                                (water_data['Parameter'] == parameter), ['Date', 'Time', 'MeasureValue']]
-        # Change to datetime object
-        measure['Date'] = measure['Date'].apply(lambda x: datetime.strptime(x, '%Y-%m-%d'))
-        measure = measure.sort_values('Date', ascending = True)
-        measure['hoverinfo'] = measure.apply(lambda row: '{}, {}'.format(datetime.strftime(row['Date'], '%Y-%m-%d'), row['Time']), axis = 1)
+            
+
+            # Subset by measure value - now graphs the parameter that is selected in the Parameter dropdown for that row
+            measure = water_data.loc[(water_data['Longitude'] == station_coords[1]) & (water_data['Latitude'] == station_coords[0]) & 
+                                    (water_data['Parameter'] == station['Parameter']), ['Date', 'Time', 'MeasureValue']]
+            # Change to datetime object
+            measure['Date'] = measure['Date'].apply(lambda x: datetime.strptime(x, '%Y-%m-%d'))
+            measure = measure.sort_values('Date', ascending = True)
+            measure['hoverinfo'] = measure.apply(lambda row: '{}, {}'.format(datetime.strftime(row['Date'], '%Y-%m-%d'), row['Time']), axis = 1)
 
 
-        fig.add_trace(
-            go.Scatter(
-                x = measure['Date'],
-                y = measure['MeasureValue'],
-                name = '{}, {}'.format(station_coords[0], station_coords[1]),
-                mode = 'lines',
-                text = measure['hoverinfo'],
-                hoverinfo = 'text+y'
-            ))
+            fig.add_trace(
+                go.Scatter(
+                    x = measure['Date'],
+                    y = measure['MeasureValue'],
+                    name = '{}, {}, {}'.format(station_coords[0], station_coords[1], station['Parameter']),
+                    mode = 'lines',
+                    text = measure['hoverinfo'],
+                    hoverinfo = 'text+y'
+                ))
+
+        elif station['Point Type'] == 'Point Source':
+
+            measure = ps_data.loc[(ps_data['LONGITUDE'] == station_coords[1]) & (ps_data['LATITUDE'] == station_coords[0]) & 
+            (ps_data['PARAMETER'] == station['Parameter']), ['DMR_DATE', 'VALUE', 'UNITS']]
+            
+            measure['DMR_DATE'] = measure['DMR_DATE'].apply(lambda x: datetime.strptime(x, '%m/%d/%Y'))
+            measure = measure.sort_values('DMR_DATE', ascending = True)
+            measure['hoverinfo'] = measure.apply(lambda row: datetime.strftime(row['DMR_DATE'], '%Y-%m-%d'), axis = 1)
+
+            fig.add_trace(
+                go.Scatter(
+                    x = measure['DMR_DATE'],
+                    y = measure['VALUE'],
+                    name = '{}, {}, {}, {}'.format(station_coords[0], station_coords[1], station['Parameter'], measure['UNITS'].unique()[0]),
+                    mode = 'lines',
+                    text = measure['hoverinfo'],
+                    hoverinfo = 'text+y'
+                ))
+
 
     fig.update_layout(
-        title = parameter,
+        title = 'Station & Point Source Parameter Values',
         legend = dict(x = -.1, y = 1.2),
-        yaxis_title = parameter,
+        yaxis_title = 'Value',
         xaxis_title = 'Date'
     )
 
     return fig
-
-
-
-
-
 
 
 
@@ -334,10 +343,9 @@ def draw_graph(parameter, datatable, datatable_selected_rows):
     Input('month_dropdown', 'value'),
     Input('aggregation_dropdown', 'value'),
     Input('point_source_checklist', 'value'),
-    Input('center_map_checklist', 'value')]
+    Input('show_huc_checklist', 'value')]
 )
-def show_map(huc, parameter, year, month, aggregation, point_source_checklist_value, center_map_checklist_value):
-
+def show_map(huc, parameter, year, month, aggregation, point_source_checklist_value, show_huc_checklist_value):
 
     # Subset by HUC
     water_data_subset = water_data.loc[water_data['HUC12_'] == huc, :]
@@ -372,6 +380,17 @@ def show_map(huc, parameter, year, month, aggregation, point_source_checklist_va
         )]
 
 
+    huc_points = go.Scattermapbox(
+        lat = huc_data['LAT'],
+        lon = huc_data['LON'],
+        mode = 'markers',
+        marker = go.scattermapbox.Marker(
+                opacity = 0
+        ),
+        text = huc_data['text'],
+        name = 'HUCs'
+    )
+
     point_sources = go.Scattermapbox(
         lat = ps_data['LATITUDE'],
         lon = ps_data['LONGITUDE'],
@@ -386,21 +405,46 @@ def show_map(huc, parameter, year, month, aggregation, point_source_checklist_va
 
     if point_source_checklist_value == [True]:
         data.append(point_sources)
+    if show_huc_checklist_value == [True]:
+        print('Plotting HUCs')
+        data.append(huc_points)
 
-    mapbox_dict = dict(
-                    accesstoken=mapbox_access_token,
-                    bearing=0,
-                    center= (go.layout.mapbox.Center(
-                        lat=39,
-                        lon=-76.4
-                    )),
-                    pitch=0,
-                    zoom=9
-                )
+    # Show HUCs
+    layers=[{
+        'name': 'Segments',
+        'sourcetype': 'geojson',
+        'source': json.loads(huc_data['geometry_json'][i]),
+        'visible': True,
+        'opacity': 0.5,
+        'color': 'grey',
+        'type': 'fill',   
+        } for i in range(len(huc_data))]
+
+    if show_huc_checklist_value == [True]:
+        mapbox_dict = dict(
+                        accesstoken=mapbox_access_token,
+                        bearing=0,
+                        layers = layers,
+                        center= (go.layout.mapbox.Center(
+                            lat=39,
+                            lon=-76.4
+                        )),
+                        pitch=0,
+                        zoom=9
+                    )
+    else:
+        mapbox_dict = dict(
+                        accesstoken=mapbox_access_token,
+                        bearing=0,
+                        center= (go.layout.mapbox.Center(
+                            lat=39,
+                            lon=-76.4
+                        )),
+                        pitch=0,
+                        zoom=9
+                    )
+
     
-    #if center_map_checklist_value == [False]:
-    #    del mapbox_dict['center']
-
     return {'data': data,
             'layout': go.Layout(
                 height = 800,
