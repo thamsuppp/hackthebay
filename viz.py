@@ -20,6 +20,30 @@ import matplotlib.cm as cm
 from datetime import datetime
 from stringcase import titlecase
 
+import matplotlib.colors as mcolors
+import matplotlib.cm as cm
+#Set overlay colors for data
+def set_overlay_colors(dataset):
+    """Create overlay colors based on values
+    :param dataset: gpd.Series, array of values to map colors to
+    :returns: dict, hex color value for each language or index value
+    """
+    minima = dataset.min()
+    maxima = dataset.max()
+    #norm is the normalized color scale
+    norm = mcolors.Normalize(vmin=minima, vmax=maxima, clip=True)
+    #mapper object
+    mapper = cm.ScalarMappable(norm=norm, cmap= 'PuBu')
+    #mapper object maps every value in dataset to color
+    colors = [mcolors.to_hex(mapper.to_rgba(v)) for v in dataset]
+    #Dictionary of index:color mapping
+    overlay_color = {
+        idx: shade
+        for idx, shade in zip(dataset.index, colors)
+    }
+
+    return overlay_color
+
 mapbox_access_token = "pk.eyJ1IjoidGhhbXN1cHBwIiwiYSI6ImNrN3Z4eTk2cTA3M2czbG5udDBtM29ubGIifQ.3UvulsJUb0FSLnAOkJiRiA"
 
 
@@ -42,6 +66,8 @@ water_data['Longitude'] = water_data['Longitude'].apply(lambda x: round(x, 3))
 ps_data = pd.read_csv('PointSourceLoadDataState_updated.csv')
 ps_data['LATITUDE'] = ps_data['LATITUDE'].apply(lambda x: round(x, 3))
 ps_data['LONGITUDE'] = ps_data['LONGITUDE'].apply(lambda x: round(x, 3))
+ps_data['Date'] = ps_data['DMR_DATE'].apply(lambda x: datetime.strptime(x, '%m/%d/%Y'))
+ps_data['Month'] = ps_data['Date'].dt.to_period('M')
 
 huc_data = pd.read_csv('HUCS_with_ps.csv')
 huc_data['text'] = huc_data.apply(lambda row: '{} -> {}'.format(row['HUC12'], row['TOHUC']), axis = 1)
@@ -112,30 +138,8 @@ app.layout = html.Div([
                     {'id': 'Discharge Type', 'name': 'Discharge Type'},
                 ],
                 data = [
-                    # {'Point Type': 'Station',
-                    # 'Coordinates': '39.44149, -76.02599000000002',
-                    # 'Parameter': 'TN',
-                    # 'HUC12': 20600010000,
-                    # 'HUC Name': 'Upper Chesapeake Bay',
-                    # 'County': 'Cecil County',
-                    # 'State': 'MD',
-                    # 'Station': 'CB2.1',
-                    # 'Latitude': 39.441,
-                    # 'Longitude': -76.026}
-
                 ],
                 dropdown_conditional = [
-                #     {
-                #         'if': {
-                #             'column_id': 'Parameter',
-                #             'filter_query': '{Coordinates} eq "39.44149, -76.02599000000002"'
-                #         },
-                #         'options': [
-                #                         {'label': i, 'value': i}
-                #                         for i in ['TN', 'TP', 'WTEMP']
-                #                     ]
-                #     }
-
                 ],
                 editable = True,
                 row_selectable='multi',
@@ -162,6 +166,20 @@ app.layout = html.Div([
         id = 'show_huc_checklist',
         options = [{'label': 'Show HUC', 'value': True}],
         value = [True]),
+
+
+    dcc.Dropdown(
+        id = 'huc_month_dropdown',
+        options = [{'label': month, 'value': month} for month in ps_data['Month'].astype(str).unique()]
+    ),
+
+    dcc.Dropdown(
+        id = 'huc_parameter_dropdown',
+        options = [{'label': i, 'value': i} for i in 
+                    ['Nitrogen Load', 'Phosphorous Load', 'BOD5', 'TON', 'FLOW', 'TN', 'NH3', 'PO4', 'TOP', 'TP', 'TSS',
+       'DO', 'NO23']
+                    ]
+    )
 ], className="container")
 
 
@@ -307,15 +325,15 @@ def draw_graph(datatable, datatable_selected_rows):
         elif station['Point Type'] == 'Point Source':
 
             measure = ps_data.loc[(ps_data['LONGITUDE'] == station_coords[1]) & (ps_data['LATITUDE'] == station_coords[0]) & 
-            (ps_data['PARAMETER'] == station['Parameter']), ['DMR_DATE', 'VALUE', 'UNITS']]
+            (ps_data['PARAMETER'] == station['Parameter']), ['Date', 'VALUE', 'UNITS']]
             
-            measure['DMR_DATE'] = measure['DMR_DATE'].apply(lambda x: datetime.strptime(x, '%m/%d/%Y'))
-            measure = measure.sort_values('DMR_DATE', ascending = True)
-            measure['hoverinfo'] = measure.apply(lambda row: datetime.strftime(row['DMR_DATE'], '%Y-%m-%d'), axis = 1)
+            
+            measure = measure.sort_values('Date', ascending = True)
+            measure['hoverinfo'] = measure.apply(lambda row: datetime.strftime(row['Date'], '%Y-%m-%d'), axis = 1)
 
             fig.add_trace(
                 go.Scatter(
-                    x = measure['DMR_DATE'],
+                    x = measure['Date'],
                     y = measure['VALUE'],
                     name = '{}, {}, {}, {}'.format(station_coords[0], station_coords[1], station['Parameter'], measure['UNITS'].unique()[0]),
                     mode = 'lines',
@@ -341,11 +359,14 @@ def draw_graph(datatable, datatable_selected_rows):
     Input('parameter_dropdown', 'value'),
     Input('year_dropdown', 'value'),
     Input('month_dropdown', 'value'),
+    Input('huc_month_dropdown', 'value'),
+    Input('huc_parameter_dropdown', 'value'),
     Input('aggregation_dropdown', 'value'),
     Input('point_source_checklist', 'value'),
     Input('show_huc_checklist', 'value')]
 )
-def show_map(huc, parameter, year, month, aggregation, point_source_checklist_value, show_huc_checklist_value):
+def show_map(huc, parameter, year, month, huc_month, huc_parameter, 
+    aggregation, point_source_checklist_value, show_huc_checklist_value):
 
     # Subset by HUC
     water_data_subset = water_data.loc[water_data['HUC12_'] == huc, :]
@@ -363,7 +384,7 @@ def show_map(huc, parameter, year, month, aggregation, point_source_checklist_va
         param_summary = water_data_subset.loc[(water_data_subset['Year'] == year) & (water_data_subset['Month'] == month) & (water_data_subset['Parameter'] == parameter), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].max()
     else:
         param_summary = water_data_subset.loc[(water_data_subset['Year'] == 2015) & (water_data_subset['Month'] == 1) & (water_data_subset['Parameter'] == 'TN'), :].groupby('coordinates')[['MeasureValue', 'Longitude', 'Latitude']].mean()
-        
+
     data = [go.Scattermapbox(
             lat = param_summary['Latitude'],
             lon = param_summary['Longitude'],
@@ -379,18 +400,6 @@ def show_map(huc, parameter, year, month, aggregation, point_source_checklist_va
             name = 'Stations'
         )]
 
-
-    huc_points = go.Scattermapbox(
-        lat = huc_data['LAT'],
-        lon = huc_data['LON'],
-        mode = 'markers',
-        marker = go.scattermapbox.Marker(
-                opacity = 0
-        ),
-        text = huc_data['text'],
-        name = 'HUCs'
-    )
-
     point_sources = go.Scattermapbox(
         lat = ps_data['LATITUDE'],
         lon = ps_data['LONGITUDE'],
@@ -405,22 +414,70 @@ def show_map(huc, parameter, year, month, aggregation, point_source_checklist_va
 
     if point_source_checklist_value == [True]:
         data.append(point_sources)
+
     if show_huc_checklist_value == [True]:
         print('Plotting HUCs')
+        huc_data_copy = huc_data.copy()
+
+        huc_data_copy['HUC12'] = huc_data_copy['HUC12'].astype(str)
+        
+        if huc_parameter in ['Nitrogen Load', 'Phosphorous Load']:
+            param = 'TN' if huc_parameter == 'Nitrogen Load' else 'TP'
+            month_data_huc = ps_data.loc[(ps_data['PARAMETER'] == param) | (ps_data['PARAMETER'] == 'FLOW'), ['HUC', 'Month', 'PARAMETER', 'VALUE']] \
+                                    .groupby(['HUC', 'Month', 'PARAMETER'])['VALUE'].sum().reset_index() \
+                                    .pivot(index = ['HUC', 'Month'], columns = 'PARAMETER', values = 'VALUE') 
+
+            month_data_huc['LOAD'] = month_data_huc[param] * month_data_huc['FLOW'] * 30 * 8.344
+
+            month_data_huc_pivot = month_data_huc['LOAD'].reset_index() \
+                                                        .pivot(columns = 'HUC', index = 'Month', values = 'LOAD') \
+                                                        .fillna(0) \
+
+        else:
+        
+            month_data_huc = ps_data.loc[(ps_data['PARAMETER'] == huc_parameter), ['HUC', 'Month', 'PARAMETER', 'VALUE']] \
+                .groupby(['HUC', 'Month', 'PARAMETER'])['VALUE'].sum().reset_index() \
+                .pivot(index = ['HUC', 'Month'], columns = 'PARAMETER', values = 'VALUE') 
+            month_data_huc_pivot = month_data_huc.reset_index() \
+                .pivot(columns = 'HUC', index = 'Month', values = huc_parameter) \
+                .fillna(0)                                                    
+
+        # Select HUC data for one month
+        huc_month = month_data_huc_pivot[huc_month: huc_month].transpose().reset_index()
+        huc_month['HUC'] = huc_month['HUC'].astype(str)
+        huc_month.columns = ['HUC12', 'Value']
+
+        # Merge the HUC point source data with the HUC data
+        huc_data_copy = huc_data_copy.merge(huc_month, on = 'HUC12')       
+
+        colors = set_overlay_colors(huc_data_copy['Value'])    
+
+
+        huc_points = go.Scattermapbox(
+                lat = huc_data_copy['LAT'],
+                lon = huc_data_copy['LON'],
+                mode = 'markers',
+                marker = go.scattermapbox.Marker(
+                        opacity = 0
+                ),
+                text = huc_data_copy['Value'],
+                name = huc_parameter
+            )
+
         data.append(huc_points)
 
-    # Show HUCs
-    layers=[{
-        'name': 'Segments',
-        'sourcetype': 'geojson',
-        'source': json.loads(huc_data['geometry_json'][i]),
-        'visible': True,
-        'opacity': 0.5,
-        'color': 'grey',
-        'type': 'fill',   
-        } for i in range(len(huc_data))]
+        # Show HUCs
+        layers=[{
+            'name': 'Segments',
+            'sourcetype': 'geojson',
+            'source': json.loads(huc_data['geometry_json'][i]),
+            'visible': True,
+            'opacity': 0.5,
+            'color': colors[i],
+            'type': 'fill',   
+            } for i in range(len(huc_data_copy))]
 
-    if show_huc_checklist_value == [True]:
+    
         mapbox_dict = dict(
                         accesstoken=mapbox_access_token,
                         bearing=0,
