@@ -8,7 +8,6 @@ import dash_html_components as html
 import pandas as pd
 import numpy as np
 import plotly.graph_objs as go
-
 import json
 import requests
 
@@ -22,6 +21,7 @@ from stringcase import titlecase
 
 import matplotlib.colors as mcolors
 import matplotlib.cm as cm
+import networkx as nx
 #Set overlay colors for data
 def set_overlay_colors(dataset):
     """Create overlay colors based on values
@@ -58,23 +58,70 @@ else:
 
 # Load the entire water data
 water_data = pd.read_csv('Water_FINAL.csv')
-
 # Round latitude and longitude to 3dp
 water_data['Latitude'] = water_data['Latitude'].apply(lambda x: round(x, 3))
 water_data['Longitude'] = water_data['Longitude'].apply(lambda x: round(x, 3))
 
+# Load Point Source Pollution Data
 ps_data = pd.read_csv('PointSourceLoadDataState_updated.csv')
 ps_data['LATITUDE'] = ps_data['LATITUDE'].apply(lambda x: round(x, 3))
 ps_data['LONGITUDE'] = ps_data['LONGITUDE'].apply(lambda x: round(x, 3))
 ps_data['Date'] = ps_data['DMR_DATE'].apply(lambda x: datetime.strptime(x, '%m/%d/%Y'))
 ps_data['Month'] = ps_data['Date'].dt.to_period('M')
 
+# Load Relevant HUCs Data
 huc_data = pd.read_csv('HUCS_with_ps.csv')
+# Have to convert to str as it is automatically saved as an int
+huc_data[['HUC12', 'TOHUC']] = huc_data[['HUC12', 'TOHUC']].astype(str)
 huc_data['text'] = huc_data.apply(lambda row: '{} -> {}'.format(row['HUC12'], row['TOHUC']), axis = 1)
 
-
-
 print('Loaded')
+
+
+# EXTERNAL HUC level data - huc_num_points_dict
+
+# Get the point source: HUC dataset
+point_huc_dict = ps_data[['coordinates', 'HUC']].drop_duplicates().set_index('coordinates').to_dict()['HUC']
+points_huc_tuple_rev = [(str(b),a) for a,b in point_huc_dict.items()]
+# Flip it to get the HUC: point sources dataset
+huc_points_dict = {}
+for e in points_huc_tuple_rev:
+    huc_points_dict.setdefault(e[0], set()).add(e[1])
+    
+# huc_points_dict is a dictionary of HUC: point sources
+# Convert this into huc_num_points_dict (NODE DATA)
+huc_num_points_dict = {key: len(value) for key, value in huc_points_dict.items()}
+# Get a dataframe with all the HUC flows, and convert to str
+huc_flows = huc_data[['HUC12', 'TOHUC']]
+
+# List of unique HUCs (i.e. NODES of DAG), some of them might or might not have point sources
+unique_hucs = pd.unique(huc_flows.values.ravel()).tolist()
+unique_hucs = [e for e in unique_hucs]
+
+# Instantiate directed graph
+graph = nx.DiGraph()
+# Add nodes, with the property being the # point sources (huc_num_points_dict)
+hucs_to_add = [(huc, {'num_ps': (huc_num_points_dict[huc] if (huc in huc_num_points_dict) else 0)}) for huc in unique_hucs]
+graph.add_nodes_from(hucs_to_add)
+
+### Add edges
+
+# Store the HUC from and to as EDGES of a directed graph
+huc_flows_edges = [(fr, to) for fr, to in zip(huc_flows['HUC12'], huc_flows['TOHUC'])]
+graph.add_edges_from(huc_flows_edges)
+
+# For all HUCs, get this sum of point sources for all ancestors of a given HUC
+huc_cum_num_points_dict = {huc: sum(graph.nodes[node]['num_ps'] for node in nx.ancestors(graph, huc)) + graph.nodes[huc]['num_ps']
+                           for huc in unique_hucs}
+huc_cum_num_points_df =  pd.DataFrame(huc_cum_num_points_dict.items())
+huc_cum_num_points_df.columns = ['HUC12', 'num_ps']
+
+# Merge with original HUC list
+huc_data = huc_data.merge(huc_cum_num_points_df, on = 'HUC12', how = 'left')
+
+
+
+print('Done with Graph Stuff')
 
 
 
@@ -160,8 +207,6 @@ app.layout = html.Div([
     html.Div(dcc.Graph(id="map")),
     
 
-
-
     dcc.Checklist(
         id = 'show_huc_checklist',
         options = [{'label': 'Show HUC', 'value': True}],
@@ -177,7 +222,7 @@ app.layout = html.Div([
         id = 'huc_parameter_dropdown',
         options = [{'label': i, 'value': i} for i in 
                     ['Nitrogen Load', 'Phosphorous Load', 'BOD5', 'TON', 'FLOW', 'TN', 'NH3', 'PO4', 'TOP', 'TP', 'TSS',
-       'DO', 'NO23']
+       'DO', 'NO23', 'Total Upstream Point Sources']
                     ]
     )
 ], className="container")
@@ -232,6 +277,7 @@ def update_station_list(click_data, datatable, datatable_dropdown_conditional):
             'Latitude': station_info_first['Latitude'],
             'Longitude': station_info_first['Longitude']}
 
+        # Add the parameter dropdown options for this point
         dropdown_dict = {
             'if': {
                 'column_id': 'Parameter',
@@ -264,6 +310,7 @@ def update_station_list(click_data, datatable, datatable_dropdown_conditional):
             'Latitude': ps_info_first['LATITUDE'],
             'Longitude': ps_info_first['LONGITUDE']}
 
+        # Add the parameter dropdown options for this point
         dropdown_dict = {
             'if': {
                 'column_id': 'Parameter',
@@ -273,7 +320,6 @@ def update_station_list(click_data, datatable, datatable_dropdown_conditional):
                 {'label': i, 'value': i} for i in ps_info['PARAMETER'].unique()
             ]
         }
-
 
     datatable.append(data)
     if not datatable_dropdown_conditional:
@@ -300,8 +346,6 @@ def draw_graph(datatable, datatable_selected_rows):
         
         station_coords = (station['Latitude'], station['Longitude'])
         if station['Point Type'] == 'Station':
-
-            
 
             # Subset by measure value - now graphs the parameter that is selected in the Parameter dropdown for that row
             measure = water_data.loc[(water_data['Longitude'] == station_coords[1]) & (water_data['Latitude'] == station_coords[0]) & 
@@ -341,7 +385,6 @@ def draw_graph(datatable, datatable_selected_rows):
                     hoverinfo = 'text+y'
                 ))
 
-
     fig.update_layout(
         title = 'Station & Point Source Parameter Values',
         legend = dict(x = -.1, y = 1.2),
@@ -350,8 +393,6 @@ def draw_graph(datatable, datatable_selected_rows):
     )
 
     return fig
-
-
 
 @app.callback(
     Output('map', 'figure'),
@@ -405,7 +446,7 @@ def show_map(huc, parameter, year, month, huc_month, huc_parameter,
         lon = ps_data['LONGITUDE'],
         mode = 'markers',
         marker = go.scattermapbox.Marker(
-                size = 7,
+                size = 5,
                 color = 'red'
         ),
         text = ps_data['FACILITY'],
@@ -419,50 +460,66 @@ def show_map(huc, parameter, year, month, huc_month, huc_parameter,
         print('Plotting HUCs')
         huc_data_copy = huc_data.copy()
 
-        huc_data_copy['HUC12'] = huc_data_copy['HUC12'].astype(str)
         
-        if huc_parameter in ['Nitrogen Load', 'Phosphorous Load']:
-            param = 'TN' if huc_parameter == 'Nitrogen Load' else 'TP'
-            month_data_huc = ps_data.loc[(ps_data['PARAMETER'] == param) | (ps_data['PARAMETER'] == 'FLOW'), ['HUC', 'Month', 'PARAMETER', 'VALUE']] \
-                                    .groupby(['HUC', 'Month', 'PARAMETER'])['VALUE'].sum().reset_index() \
-                                    .pivot(index = ['HUC', 'Month'], columns = 'PARAMETER', values = 'VALUE') 
+        if huc_parameter == 'Total Upstream Point Sources':
+            colors = set_overlay_colors(huc_data_copy['num_ps']) 
 
-            month_data_huc['LOAD'] = month_data_huc[param] * month_data_huc['FLOW'] * 30 * 8.344
-
-            month_data_huc_pivot = month_data_huc['LOAD'].reset_index() \
-                                                        .pivot(columns = 'HUC', index = 'Month', values = 'LOAD') \
-                                                        .fillna(0) \
-
+                
+            huc_points = go.Scattermapbox(
+                    lat = huc_data_copy['LAT'],
+                    lon = huc_data_copy['LON'],
+                    mode = 'markers',
+                    marker = go.scattermapbox.Marker(
+                            opacity = 0
+                    ),
+                    text = huc_data_copy['num_ps'],
+                    name = huc_parameter
+                )
+        
         else:
-        
-            month_data_huc = ps_data.loc[(ps_data['PARAMETER'] == huc_parameter), ['HUC', 'Month', 'PARAMETER', 'VALUE']] \
-                .groupby(['HUC', 'Month', 'PARAMETER'])['VALUE'].sum().reset_index() \
-                .pivot(index = ['HUC', 'Month'], columns = 'PARAMETER', values = 'VALUE') 
-            month_data_huc_pivot = month_data_huc.reset_index() \
-                .pivot(columns = 'HUC', index = 'Month', values = huc_parameter) \
-                .fillna(0)                                                    
+            
+            # Load - need to calculate Load from TN and TP amounts multiplied by the Flow
+            if huc_parameter in ['Nitrogen Load', 'Phosphorous Load']:
+                param = 'TN' if huc_parameter == 'Nitrogen Load' else 'TP'
+                month_data_huc = ps_data.loc[(ps_data['PARAMETER'] == param) | (ps_data['PARAMETER'] == 'FLOW'), ['HUC', 'Month', 'PARAMETER', 'VALUE']] \
+                                        .groupby(['HUC', 'Month', 'PARAMETER'])['VALUE'].sum().reset_index() \
+                                        .pivot(index = ['HUC', 'Month'], columns = 'PARAMETER', values = 'VALUE') 
 
-        # Select HUC data for one month
-        huc_month = month_data_huc_pivot[huc_month: huc_month].transpose().reset_index()
-        huc_month['HUC'] = huc_month['HUC'].astype(str)
-        huc_month.columns = ['HUC12', 'Value']
+                month_data_huc['LOAD'] = month_data_huc[param] * month_data_huc['FLOW'] * 30 * 8.344
 
-        # Merge the HUC point source data with the HUC data
-        huc_data_copy = huc_data_copy.merge(huc_month, on = 'HUC12')       
+                month_data_huc_pivot = month_data_huc['LOAD'].reset_index() \
+                                                            .pivot(columns = 'HUC', index = 'Month', values = 'LOAD') \
+                                                            .fillna(0)                                      
 
-        colors = set_overlay_colors(huc_data_copy['Value'])    
+            elif huc_parameter != 'Total Upstream Point Sources':
+            
+                month_data_huc = ps_data.loc[(ps_data['PARAMETER'] == huc_parameter), ['HUC', 'Month', 'PARAMETER', 'VALUE']] \
+                    .groupby(['HUC', 'Month', 'PARAMETER'])['VALUE'].sum().reset_index() \
+                    .pivot(index = ['HUC', 'Month'], columns = 'PARAMETER', values = 'VALUE') 
+                month_data_huc_pivot = month_data_huc.reset_index() \
+                    .pivot(columns = 'HUC', index = 'Month', values = huc_parameter) \
+                    .fillna(0)                  
 
+            # Select HUC data for one month
+            huc_month = month_data_huc_pivot[huc_month: huc_month].transpose().reset_index()
+            huc_month['HUC'] = huc_month['HUC'].astype(str)
+            huc_month.columns = ['HUC12', 'Value']
 
-        huc_points = go.Scattermapbox(
-                lat = huc_data_copy['LAT'],
-                lon = huc_data_copy['LON'],
-                mode = 'markers',
-                marker = go.scattermapbox.Marker(
-                        opacity = 0
-                ),
-                text = huc_data_copy['Value'],
-                name = huc_parameter
-            )
+            # Merge the HUC point source data with the HUC data
+            huc_data_copy = huc_data_copy.merge(huc_month, on = 'HUC12')                                      
+  
+            colors = set_overlay_colors(huc_data_copy['Value'])    
+
+            huc_points = go.Scattermapbox(
+                    lat = huc_data_copy['LAT'],
+                    lon = huc_data_copy['LON'],
+                    mode = 'markers',
+                    marker = go.scattermapbox.Marker(
+                            opacity = 0
+                    ),
+                    text = huc_data_copy['Value'],
+                    name = huc_parameter
+                )
 
         data.append(huc_points)
 
@@ -487,7 +544,7 @@ def show_map(huc, parameter, year, month, huc_month, huc_parameter,
                             lon=-76.4
                         )),
                         pitch=0,
-                        zoom=9
+                        zoom=7
                     )
     else:
         mapbox_dict = dict(
@@ -498,7 +555,7 @@ def show_map(huc, parameter, year, month, huc_month, huc_parameter,
                             lon=-76.4
                         )),
                         pitch=0,
-                        zoom=9
+                        zoom=7
                     )
 
     
