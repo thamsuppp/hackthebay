@@ -57,7 +57,13 @@ else:
     app_name = 'dash-scattermapboxplot'
 
 # Load the entire water data
-water_data = pd.read_csv('Water_FINAL.csv')
+water_part1 = pd.read_csv('water_condensed1.csv')
+water_part2 = pd.read_csv('water_condensed2.csv')
+water_part3 = pd.read_csv('water_condensed3.csv')
+water_data = pd.concat([water_part1, water_part2, water_part3], axis = 0).reset_index(drop = True)
+
+
+
 # Round latitude and longitude to 3dp
 water_data['Latitude'] = water_data['Latitude'].apply(lambda x: round(x, 3))
 water_data['Longitude'] = water_data['Longitude'].apply(lambda x: round(x, 3))
@@ -70,60 +76,12 @@ ps_data['Date'] = ps_data['DMR_DATE'].apply(lambda x: datetime.strptime(x, '%m/%
 ps_data['Month'] = ps_data['Date'].dt.to_period('M')
 
 # Load Relevant HUCs Data
-huc_data = pd.read_csv('HUCS_with_ps.csv')
+huc_ps_data = pd.read_csv('HUCS_with_ps.csv')
 # Have to convert to str as it is automatically saved as an int
-huc_data[['HUC12', 'TOHUC']] = huc_data[['HUC12', 'TOHUC']].astype(str)
-huc_data['text'] = huc_data.apply(lambda row: '{} -> {}'.format(row['HUC12'], row['TOHUC']), axis = 1)
+huc_ps_data[['HUC12', 'TOHUC']] = huc_ps_data[['HUC12', 'TOHUC']].astype(str)
+huc_ps_data['text'] = huc_ps_data.apply(lambda row: '{} -> {}'.format(row['HUC12'], row['TOHUC']), axis = 1)
 
 print('Loaded')
-
-
-# EXTERNAL HUC level data - huc_num_points_dict
-
-# Get the point source: HUC dataset
-point_huc_dict = ps_data[['coordinates', 'HUC']].drop_duplicates().set_index('coordinates').to_dict()['HUC']
-points_huc_tuple_rev = [(str(b),a) for a,b in point_huc_dict.items()]
-# Flip it to get the HUC: point sources dataset
-huc_points_dict = {}
-for e in points_huc_tuple_rev:
-    huc_points_dict.setdefault(e[0], set()).add(e[1])
-    
-# huc_points_dict is a dictionary of HUC: point sources
-# Convert this into huc_num_points_dict (NODE DATA)
-huc_num_points_dict = {key: len(value) for key, value in huc_points_dict.items()}
-# Get a dataframe with all the HUC flows, and convert to str
-huc_flows = huc_data[['HUC12', 'TOHUC']]
-
-# List of unique HUCs (i.e. NODES of DAG), some of them might or might not have point sources
-unique_hucs = pd.unique(huc_flows.values.ravel()).tolist()
-unique_hucs = [e for e in unique_hucs]
-
-# Instantiate directed graph
-graph = nx.DiGraph()
-# Add nodes, with the property being the # point sources (huc_num_points_dict)
-hucs_to_add = [(huc, {'num_ps': (huc_num_points_dict[huc] if (huc in huc_num_points_dict) else 0)}) for huc in unique_hucs]
-graph.add_nodes_from(hucs_to_add)
-
-### Add edges
-
-# Store the HUC from and to as EDGES of a directed graph
-huc_flows_edges = [(fr, to) for fr, to in zip(huc_flows['HUC12'], huc_flows['TOHUC'])]
-graph.add_edges_from(huc_flows_edges)
-
-# For all HUCs, get this sum of point sources for all ancestors of a given HUC
-huc_cum_num_points_dict = {huc: sum(graph.nodes[node]['num_ps'] for node in nx.ancestors(graph, huc)) + graph.nodes[huc]['num_ps']
-                           for huc in unique_hucs}
-huc_cum_num_points_df =  pd.DataFrame(huc_cum_num_points_dict.items())
-huc_cum_num_points_df.columns = ['HUC12', 'num_ps']
-
-# Merge with original HUC list
-huc_data = huc_data.merge(huc_cum_num_points_df, on = 'HUC12', how = 'left')
-
-
-
-print('Done with Graph Stuff')
-
-
 
 ### APP LAYOUT ###
 app.layout = html.Div([
@@ -133,7 +91,8 @@ app.layout = html.Div([
 
     dcc.Dropdown(
         id = 'parameter_dropdown',
-        options = [{'label': param, 'value': param} for param in water_data['Parameter'].unique()] 
+        options = [{'label': param, 'value': param} for param in water_data['Parameter'].unique()] ,
+        placeholder = 'Choose parameter'
     ),
 
     dcc.Dropdown(
@@ -143,23 +102,27 @@ app.layout = html.Div([
                     {'label': 'median', 'value': 'median'},
                     {'label': 'min', 'value': 'min'},
                     {'label': 'max', 'value': 'max'}
-        ]
+        ],
+        placeholder = 'Choose aggregation'
     ),
 
     dcc.Dropdown(
         id = 'huc_dropdown',
         # Give the dropdown values of HUCs in descending order of unique # of coordinates for that HUC
-        options = [{'label': huc, 'value': huc} for huc in water_data.groupby('HUC12_')['coordinates'].nunique().sort_values(ascending = False).index.tolist()]
+        options = [{'label': huc, 'value': huc} for huc in water_data.groupby('HUC12_')['coordinates'].nunique().sort_values(ascending = False).index.tolist()],
+        placeholder = 'Choose HUC'
     ),
 
     dcc.Dropdown(
         id = 'year_dropdown',
-        options = [{'label': year, 'value': year} for year in water_data['Year'].unique()]
+        options = [{'label': year, 'value': year} for year in sorted(water_data['Year'].unique())],
+        placeholder = 'Choose year'
     ),
 
     dcc.Dropdown(
         id = 'month_dropdown',
-        options = [{'label': month, 'value': month} for month in range(1, 13)]
+        options = [{'label': month, 'value': month} for month in range(1, 13)],
+        placeholder = 'Choose month'
     ),
 
     html.Div(
@@ -197,33 +160,45 @@ app.layout = html.Div([
     ),
 
     dcc.Graph(id = 'graph'),
+
+    # html.H3('Time Series Predictions'),
+    # dcc.Dropdown(
+    #     id = 'plot_to_do_ts_dropdown',
+    #     options = []
+    # ),
+    # dcc.Dropdown(
+    #     id = 'ts_model_dropdown',
+    #     options = [{'label': i, 'value': i} for i in ['Seasonal ARIMA', 'Seasonal ARIMA with Exogenous Predictors (SARIMAX)']]
+    # ),
+    # dcc.Dropdown(
+    #     id = 'holdout_period_dropdown',
+    #     options = []
+    # ),
     
     dcc.Checklist(
         id = 'point_source_checklist',
         options = [{'label': 'Show Point Sources of Pollution', 'value': True}],
         value = [True]),
-
-
-    html.Div(dcc.Graph(id="map")),
     
+    html.Div(dcc.Graph(id="map")),
 
+    html.H3('HUC Options'),
+    dcc.Dropdown(
+        id = 'huc_month_dropdown',
+        options = [{'label': month, 'value': month} for month in ps_data['Month'].astype(str).unique()],
+        placeholder = 'Select year and month'
+    ),
     dcc.Checklist(
         id = 'show_huc_checklist',
         options = [{'label': 'Show HUC', 'value': True}],
         value = [True]),
-
-
-    dcc.Dropdown(
-        id = 'huc_month_dropdown',
-        options = [{'label': month, 'value': month} for month in ps_data['Month'].astype(str).unique()]
-    ),
-
     dcc.Dropdown(
         id = 'huc_parameter_dropdown',
         options = [{'label': i, 'value': i} for i in 
                     ['Nitrogen Load', 'Phosphorous Load', 'BOD5', 'TON', 'FLOW', 'TN', 'NH3', 'PO4', 'TOP', 'TP', 'TSS',
-       'DO', 'NO23', 'Total Upstream Point Sources']
-                    ]
+       'DO', 'NO23', 'Total Upstream Point Sources', 'Total Upstream TN', 'Total Upstream TP']
+                    ],
+        placeholder = 'Select parameter'
     )
 ], className="container")
 
@@ -261,7 +236,7 @@ def update_station_list(click_data, datatable, datatable_dropdown_conditional):
     if click_data['points'][0]['curveNumber'] == 0: # Station:
 
         station_info = water_data.loc[(water_data['Longitude'] == longitude) & (water_data['Latitude'] == latitude), 
-                                    ['coordinates', 'HUC12_', 'HUCNAME_', 'COUNTY_', 'STATE_', 'Station', 'StationCode', 'Latitude', 'Longitude', 'Parameter']]
+                                    ['coordinates', 'HUC12_', 'HUCNAME_', 'COUNTY_', 'STATE_', 'Latitude', 'Longitude', 'Parameter']]
         print(station_info)
         station_info_first = station_info.reset_index(drop = True).iloc[0, :]
 
@@ -272,8 +247,6 @@ def update_station_list(click_data, datatable, datatable_dropdown_conditional):
             'HUC Name': station_info_first['HUCNAME_'],
             'County': station_info_first['COUNTY_'],
             'State': station_info_first['STATE_'],
-            'Station': station_info_first['Station'],
-            'Station Code': station_info_first['StationCode'],
             'Latitude': station_info_first['Latitude'],
             'Longitude': station_info_first['Longitude']}
 
@@ -328,6 +301,30 @@ def update_station_list(click_data, datatable, datatable_dropdown_conditional):
         datatable_dropdown_conditional.append(dropdown_dict)
 
     return datatable, datatable_dropdown_conditional
+
+
+# @app.callback(
+#     Output('plot_to_do_ts_dropdown', 'options'),
+#     [Input('station_list', 'data'),
+#     Input('station_list', 'selected_rows')]
+# )
+# def set_plot_to_do_ts_dropdown_options(datatable, datatable_selected_rows):
+
+#     data_selected = [datatable[index] for index in datatable_selected_rows]
+#     options = ['{}, {}'.format(e['Coordinates'], e['Parameter']) for e in data_selected]
+#     options = [{'label': e, 'value': e} for e in options]
+
+#     return options
+
+# @app.callback(
+#    Output('plot_to_do_ts_dropdown', 'options'),
+#    [Input('plot_to_do_ts_dropdown', 'value'),
+#    Input('ts_model_dropdown', 'value')]
+# )
+# def plot_ts_predictions(plot_dropdown_value, ts_model_dropdown_valu):
+
+#     coords = (float(plot_dropdown_value.split(', ')[0]), float(plot_dropdown_value.split(', ')[1])
+#     water_point = water.loc[(water['Latitude'] == coords[0]) & (water['Longitude'] == coords[1]), :]
 
 
 @app.callback(
@@ -394,6 +391,24 @@ def draw_graph(datatable, datatable_selected_rows):
 
     return fig
 
+# For each facility, calculate the nutrient load for each month
+def get_load_data(parameter):
+
+    ps_data_params = ps_data.loc[(ps_data['PARAMETER'] == parameter) | (ps_data['PARAMETER'] == 'FLOW'), ['FACILITY', 'HUC', 'Month', 'PARAMETER', 'VALUE']] \
+        .drop_duplicates(subset = ['FACILITY', 'HUC', 'Month', 'PARAMETER']) \
+        .pivot(index = ['FACILITY', 'HUC', 'Month'], columns = 'PARAMETER', values = 'VALUE') \
+        .reset_index()
+
+    ps_data_params['LOAD'] = ps_data_params['FLOW'] * ps_data_params[parameter] * 80 * 8.344
+
+    # Group by HUC and find total nutrient load for each month
+    month_data_huc = ps_data_params.groupby(['HUC', 'Month'])['LOAD'].sum().reset_index()
+
+    # Reshape to get monthly nutrient load for each HUC
+    month_data_huc_pivot = month_data_huc.pivot(columns = 'HUC', index = 'Month', values = 'LOAD').fillna(0)
+    
+    return month_data_huc_pivot
+
 @app.callback(
     Output('map', 'figure'),
     [Input('huc_dropdown', 'value'),
@@ -458,21 +473,72 @@ def show_map(huc, parameter, year, month, huc_month, huc_parameter,
 
     if show_huc_checklist_value == [True]:
         print('Plotting HUCs')
-        huc_data_copy = huc_data.copy()
+        huc_data = huc_ps_data.copy()
 
-        
-        if huc_parameter == 'Total Upstream Point Sources':
-            colors = set_overlay_colors(huc_data_copy['num_ps']) 
+        if huc_parameter in ['Total Upstream Point Sources', 'Total Upstream TN', 'Total Upstream TP']:
+
+            if huc_parameter == 'Total Upstream Point Sources':
+                
+                # Get the point source: HUC dataset
+                point_huc_dict = ps_data[['coordinates', 'HUC']].drop_duplicates().set_index('coordinates').to_dict()['HUC']
+                points_huc_tuple_rev = [(str(b),a) for a,b in point_huc_dict.items()]
+                # Flip it to get the HUC: point sources dataset
+                huc_points_dict = {}
+                for e in points_huc_tuple_rev:
+                    huc_points_dict.setdefault(e[0], set()).add(e[1])
+                    
+                # huc_points_dict is a dictionary of HUC: point sources
+                # Convert this into huc_num_points_dict (NODE DATA)
+                huc_data_dict = {key: len(value) for key, value in huc_points_dict.items()}
+
+            else:
+                param = huc_parameter.split(' ')[2]
+                huc_load = get_load_data(param)
+                huc_load_df = huc_load[huc_month:huc_month].transpose().reset_index()
+                huc_data_dict = {str(huc):load for huc, load in zip(huc_load_df.iloc[:,0], huc_load_df.iloc[:, 1])}
+
+
+            
+            huc_data[['HUC12', 'TOHUC']] = huc_data[['HUC12', 'TOHUC']].astype(str)
+            # Get a dataframe with all the HUC flows, and convert to str
+            huc_flows = huc_data[['HUC12', 'TOHUC']]
+
+            # List of unique HUCs (i.e. NODES of DAG), some of them might or might not have point sources
+            unique_hucs = pd.unique(huc_flows.values.ravel()).tolist()
+            unique_hucs = [e for e in unique_hucs]
+
+            # Instantiate directed graph
+            graph = nx.DiGraph()
+            # Add nodes, with the property being the # point sources (huc_num_points_dict)
+            hucs_to_add = [(huc, {huc_parameter: (huc_data_dict[huc] if (huc in huc_data_dict) else 0)}) for huc in unique_hucs]
+            graph.add_nodes_from(hucs_to_add)
+
+            ### Add edges
+
+            # Store the HUC from and to as EDGES of a directed graph
+            huc_flows_edges = [(fr, to) for fr, to in zip(huc_flows['HUC12'], huc_flows['TOHUC'])]
+            graph.add_edges_from(huc_flows_edges)
+
+            # For all HUCs, get this sum of point sources for all ancestors of a given HUC + itself
+            huc_cum_num_points_dict = {huc: sum(graph.nodes[node][huc_parameter] for node in nx.ancestors(graph, huc)) + graph.nodes[huc][huc_parameter]
+                                    for huc in unique_hucs}
+            huc_cum_num_points_df =  pd.DataFrame(huc_cum_num_points_dict.items())
+            huc_cum_num_points_df.columns = ['HUC12', huc_parameter]
+
+            # Merge with original HUC list
+            huc_data = huc_data.merge(huc_cum_num_points_df, on = 'HUC12', how = 'left')
+            
+            colors = set_overlay_colors(huc_data[huc_parameter]) 
 
                 
             huc_points = go.Scattermapbox(
-                    lat = huc_data_copy['LAT'],
-                    lon = huc_data_copy['LON'],
+                    lat = huc_data['LAT'],
+                    lon = huc_data['LON'],
                     mode = 'markers',
                     marker = go.scattermapbox.Marker(
                             opacity = 0
                     ),
-                    text = huc_data_copy['num_ps'],
+                    text = huc_data[huc_parameter],
                     name = huc_parameter
                 )
         
@@ -481,15 +547,9 @@ def show_map(huc, parameter, year, month, huc_month, huc_parameter,
             # Load - need to calculate Load from TN and TP amounts multiplied by the Flow
             if huc_parameter in ['Nitrogen Load', 'Phosphorous Load']:
                 param = 'TN' if huc_parameter == 'Nitrogen Load' else 'TP'
-                month_data_huc = ps_data.loc[(ps_data['PARAMETER'] == param) | (ps_data['PARAMETER'] == 'FLOW'), ['HUC', 'Month', 'PARAMETER', 'VALUE']] \
-                                        .groupby(['HUC', 'Month', 'PARAMETER'])['VALUE'].sum().reset_index() \
-                                        .pivot(index = ['HUC', 'Month'], columns = 'PARAMETER', values = 'VALUE') 
 
-                month_data_huc['LOAD'] = month_data_huc[param] * month_data_huc['FLOW'] * 30 * 8.344
-
-                month_data_huc_pivot = month_data_huc['LOAD'].reset_index() \
-                                                            .pivot(columns = 'HUC', index = 'Month', values = 'LOAD') \
-                                                            .fillna(0)                                      
+                # Reshape to get monthly nutrient load for each HUC
+                month_data_huc_pivot = get_load_data(param)                                   
 
             elif huc_parameter != 'Total Upstream Point Sources':
             
@@ -506,18 +566,18 @@ def show_map(huc, parameter, year, month, huc_month, huc_parameter,
             huc_month.columns = ['HUC12', 'Value']
 
             # Merge the HUC point source data with the HUC data
-            huc_data_copy = huc_data_copy.merge(huc_month, on = 'HUC12')                                      
+            huc_data = huc_data.merge(huc_month, on = 'HUC12')                                      
   
-            colors = set_overlay_colors(huc_data_copy['Value'])    
+            colors = set_overlay_colors(huc_data['Value'])    
 
             huc_points = go.Scattermapbox(
-                    lat = huc_data_copy['LAT'],
-                    lon = huc_data_copy['LON'],
+                    lat = huc_data['LAT'],
+                    lon = huc_data['LON'],
                     mode = 'markers',
                     marker = go.scattermapbox.Marker(
                             opacity = 0
                     ),
-                    text = huc_data_copy['Value'],
+                    text = huc_data['Value'],
                     name = huc_parameter
                 )
 
@@ -532,7 +592,7 @@ def show_map(huc, parameter, year, month, huc_month, huc_parameter,
             'opacity': 0.5,
             'color': colors[i],
             'type': 'fill',   
-            } for i in range(len(huc_data_copy))]
+            } for i in range(len(huc_data))]
 
     
         mapbox_dict = dict(
